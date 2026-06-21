@@ -17,12 +17,14 @@
 #include "imgui_impl_glfw.h"
 #include "imgui_impl_opengl3.h"
 
+#include "Cloth.h"
+
 // window setting
 const unsigned int SCR_WIDTH = 1200;
 const unsigned int SCR_HEIGHT = 1200;
 
 // camera
-Camera camera(glm::vec3(0.0f, 1.0f, 10.0f));
+Camera camera(glm::vec3(0.0f, -4.5f, 20.0f));
 
 // mouse callback
 float lastX = SCR_WIDTH / 2.0f;
@@ -35,6 +37,11 @@ float lastFrame = 0.0f;
 // shader
 glm::vec3 lightColor = glm::vec3(0.5f, 0.5f, 1.0f);
 Shader* lightingShader;
+
+// cloth
+Shader* clothShader;
+Cloth* cloth;
+glm::vec3 lightDir = glm::vec3(-0.4f, -0.7f, -0.6f); // directional light
 
 // flag
 bool useCursor = true;
@@ -56,41 +63,48 @@ void framebuffer_size_callback(GLFWwindow* window, int width, int height);
 void mouse_callback(GLFWwindow* window, double xpos, double ypos);
 void mouse_button_callback(GLFWwindow* window, int button, int action, int mods);
 void processInput(GLFWwindow* window, int key, int scancode, int action, int mods);
+void processMovement(GLFWwindow* window);
 void scroll_callback(GLFWwindow* window, double xoffset, double yoffset);
 
 void DrawSphere(glm::mat4 model);
 void DrawCylinder(glm::mat4 model);
-
-//imgui
+void DrawUnitSphere();
 void RenderImGui();
-
-float gravity = 10;
-float mass = 30;
-glm::vec3 position = glm::vec3(0.0f, 0.0f, 0.0f);
-glm::vec3 velocity = glm::vec3(0.0f, 0.0f, 0.0f);
-float timestep = 0.1f;
-float anchorX = 20;
-float anchorY = 20;
-float k = 7;
-float springForceY;
-float forceY;
-float accelerationY;
 
 void myDisplay()
 {
-	glClearColor(0.1f, 0.1f, 0.5f, 1.0f);
+	glClearColor(0.08f, 0.10f, 0.16f, 1.0f);
 	glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
-	glm::mat4 model = glm::mat4(1.0f);
-	model = glm::translate(model, glm::vec3(0.0f, -2.0f, 0.0f));
-	springForceY = -k * (position[1] - anchorY);
-	forceY = springForceY + mass * gravity;
-	accelerationY = forceY / mass;
-	velocity[1] = velocity[1] + accelerationY * timestep;
-	position[1] = position[1] + velocity[1] * timestep;
-	model = glm::translate(model, position*0.05f);
-	DrawCylinder(model);
 
-	//imgui
+	cloth->simulate();
+
+	glm::mat4 projection = glm::perspective(glm::radians(camera.Zoom),
+		(float)SCR_WIDTH / (float)SCR_HEIGHT, 0.1f, 100.0f);
+	glm::mat4 view = camera.GetViewMatrix();
+
+	clothShader->use();
+	clothShader->setMat4("projection", projection);
+	clothShader->setMat4("view", view);
+	clothShader->setMat4("model", glm::mat4(1.0f));
+	clothShader->setVec3("viewPos", camera.Position);
+	clothShader->setVec3("lightDir", lightDir);
+	clothShader->setVec3("lightColor", glm::vec3(1.0f, 1.0f, 1.0f));
+	clothShader->setVec3("objectColorFront", glm::vec3(0.15f, 0.45f, 0.85f));
+	clothShader->setVec3("objectColorBack", glm::vec3(0.85f, 0.55f, 0.20f));
+	clothShader->setFloat("shininess", 32.0f);
+	cloth->draw();
+
+	// sphere collider
+	if (cloth->colliderEnabled)
+	{
+		glm::mat4 m = glm::translate(glm::mat4(1.0f), cloth->colliderCenter);
+		m = glm::scale(m, glm::vec3(cloth->colliderRadius));
+		clothShader->setMat4("model", m);
+		clothShader->setVec3("objectColorFront", glm::vec3(0.7f, 0.7f, 0.7f));
+		clothShader->setVec3("objectColorBack", glm::vec3(0.7f, 0.7f, 0.7f));
+		DrawUnitSphere();
+	}
+
 	ImGui_ImplOpenGL3_NewFrame();
 	ImGui_ImplGlfw_NewFrame();
 	ImGui::NewFrame();
@@ -107,24 +121,10 @@ int main() {
 	createGLPrimitives();  
 	while (!glfwWindowShouldClose(window))
 	{
-		float currentFrame = glfwGetTime();
+		float currentFrame = (float)glfwGetTime();
 		deltaTime = currentFrame - lastFrame;
 		lastFrame = currentFrame;
-		lightingShader->use();
-		lightingShader->setVec3("light.position", camera.Position);
-		lightingShader->setVec3("light.direction", camera.Front);
-		lightingShader->setVec3("viewPos", camera.Position);
-		lightingShader->setVec3("light.ambient", 0.2f, 0.2f, 0.2f);
-		lightingShader->setVec3("light.diffuse", 10.0f, 10.0f, 10.0f);
-		lightingShader->setVec3("light.specular", 1.0f, 1.0f, 1.0f);
-		lightingShader->setFloat("light.constant", 0.1f);
-		lightingShader->setFloat("light.linear", 1.0f);
-		lightingShader->setFloat("light.quadratic", 0.0009f);
-		lightingShader->setFloat("material.shininess", 16.0f);
-		glm::mat4 projection = glm::perspective(glm::radians(camera.Zoom), (float)SCR_WIDTH / (float)SCR_HEIGHT, 0.1f, 100.0f);
-		glm::mat4 view = camera.GetViewMatrix();
-		lightingShader->setMat4("projection", projection);
-		lightingShader->setMat4("view", view);
+		processMovement(window);
 		myDisplay();
 		glfwSwapBuffers(window);
 		glfwPollEvents();
@@ -151,7 +151,7 @@ void initGL(GLFWwindow** window)
 	glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GL_TRUE);
 #endif // __APPLE__
 
-	* window = glfwCreateWindow(SCR_WIDTH, SCR_HEIGHT, "boid", NULL, NULL);
+	* window = glfwCreateWindow(SCR_WIDTH, SCR_HEIGHT, "spring damper mesh", NULL, NULL);
 	if (window == NULL)
 	{
 		std::cout << "Failed to create GLFW window" << std::endl;
@@ -172,13 +172,12 @@ void initGL(GLFWwindow** window)
 	}
 	glEnable(GL_DEPTH_TEST);
 
-	//imgui
 	IMGUI_CHECKVERSION();
 	ImGui::CreateContext();
 	ImGuiIO& io = ImGui::GetIO(); (void)io;
 	ImGui::StyleColorsDark();
 	ImGui_ImplGlfw_InitForOpenGL(*window, true);
-	ImGui_ImplOpenGL3_Init((char*)glGetString(GL_NUM_SHADING_LANGUAGE_VERSIONS));
+	ImGui_ImplOpenGL3_Init("#version 330");
 }
 
 void setupShader()
@@ -186,31 +185,37 @@ void setupShader()
 	lightingShader = new Shader("light_casters.vs", "light_casters.fs");
 	lightingShader->use();
 	lightingShader->setVec3("lightColor", lightColor);
+
+	clothShader = new Shader("cloth.vs", "cloth.fs");
 }
 
 void destroyShader()
 {
 	delete lightingShader;
+	delete clothShader;
 }
 
 void processInput(GLFWwindow* window, int key, int scancode, int action, int mods)
 {
-	float cameraSpeed = 2.5f * deltaTime;
-	if (glfwGetKey(window, GLFW_KEY_W) == GLFW_PRESS)
-		camera.ProcessKeyboard(FORWARD, deltaTime);
-	if (glfwGetKey(window, GLFW_KEY_S)== GLFW_PRESS)
-		camera.ProcessKeyboard(BACKWARD, deltaTime);
-	if (glfwGetKey(window, GLFW_KEY_A) == GLFW_PRESS)
-			camera.ProcessKeyboard(LEFT, deltaTime);
-	if (glfwGetKey(window, GLFW_KEY_D) == GLFW_PRESS)
-			camera.ProcessKeyboard(RIGHT, deltaTime);
-	if ((glfwGetKey(window, GLFW_KEY_C) == GLFW_PRESS)) {
+	if (key == GLFW_KEY_C && action == GLFW_PRESS) {
 		useCursor = !useCursor;
 		if (useCursor == true)
 			glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_NORMAL);
 		else
 			glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
 	}
+}
+
+void processMovement(GLFWwindow* window)
+{
+	if (glfwGetKey(window, GLFW_KEY_W) == GLFW_PRESS)
+		camera.ProcessKeyboard(FORWARD, deltaTime);
+	if (glfwGetKey(window, GLFW_KEY_S) == GLFW_PRESS)
+		camera.ProcessKeyboard(BACKWARD, deltaTime);
+	if (glfwGetKey(window, GLFW_KEY_A) == GLFW_PRESS)
+		camera.ProcessKeyboard(LEFT, deltaTime);
+	if (glfwGetKey(window, GLFW_KEY_D) == GLFW_PRESS)
+		camera.ProcessKeyboard(RIGHT, deltaTime);
 }
 
 void framebuffer_size_callback(GLFWwindow* window, int width, int height)
@@ -242,9 +247,9 @@ void mouse_button_callback(GLFWwindow* window, int button, int action, int mods)
 	else if (button == GLFW_MOUSE_BUTTON_LEFT && action == GLFW_RELEASE)
 		LeftButtonDown = false;
 	if (button == GLFW_MOUSE_BUTTON_RIGHT && action == GLFW_PRESS)
-		LeftButtonDown = true;
+		RightButtonDown = true;
 	else if (button == GLFW_MOUSE_BUTTON_RIGHT && action == GLFW_RELEASE)
-		LeftButtonDown = false;
+		RightButtonDown = false;
 }
 
 void scroll_callback(GLFWwindow* window, double xoffset, double yoffset)
@@ -259,12 +264,12 @@ public:
 		glGenBuffers(1, &vbo);
 		glGenBuffers(1, &ebo);
 	}
-	~Primitive() {
-		if (!ebo) glDeleteBuffers(1, &ebo);
-		if (!vbo) glDeleteBuffers(1, &vbo);
-		if (!VAO) glDeleteVertexArrays(1, &VAO);
+	virtual ~Primitive() {
+		if (ebo) glDeleteBuffers(1, &ebo);
+		if (vbo) glDeleteBuffers(1, &vbo);
+		if (VAO) glDeleteVertexArrays(1, &VAO);
 	}
-	void Draw() {
+	virtual void Draw() {
 		glBindVertexArray(VAO);
 		glDrawElements(GL_TRIANGLE_STRIP, IndexCount, GL_UNSIGNED_INT, 0);
 		glBindVertexArray(0);
@@ -279,6 +284,11 @@ protected:
 class Cylinder : public Primitive {
 public:
 	Cylinder(float bottomRadius = 0.5f, float topRadius = 0.5f, int NumSegs = 16);
+	void Draw() override {
+		glBindVertexArray(VAO);
+		glDrawElements(GL_TRIANGLES, IndexCount, GL_UNSIGNED_INT, 0);
+		glBindVertexArray(0);
+	}
 };
 
 class Sphere : public Primitive {
@@ -293,12 +303,14 @@ void createGLPrimitives()
 {
 	unitSphere = new Sphere();
 	unitCylinder = new Cylinder();
+	cloth = new Cloth(60, 6.0f);
 }
 
 void destroyGLPrimitives()
 {
 	delete unitSphere;
 	delete unitCylinder;
+	delete cloth;
 }
 
 void DrawCylinder(glm::mat4 model)
@@ -319,8 +331,27 @@ void DrawSphere(glm::mat4 model)
 	unitSphere->Draw();
 }
 
+void DrawUnitSphere()
+{
+	unitSphere->Draw();
+}
+
 void RenderImGui() {
-	ImGui::Begin("spring damper");
+	ImGui::Begin("Cloth");
+	ImGui::Text("FPS: %.1f", ImGui::GetIO().Framerate);
+	ImGui::Separator();
+
+	ImGui::Checkbox("wind", &cloth->windEnabled);
+	ImGui::SliderFloat("wind strength", &cloth->windStrength, 0.0f, 40.0f);
+	ImGui::SliderFloat("stiffness k", &cloth->k, 10.0f, 300.0f);
+	ImGui::SliderFloat("gravity", &cloth->gravity, 0.0f, 30.0f);
+
+	const char* pins[] = { "top corners", "top row", "none (free fall)" };
+	if (ImGui::Combo("pin mode", &cloth->pinMode, pins, 3))
+		cloth->reset();
+	if (ImGui::Button("reset"))
+		cloth->reset();
+
 	ImGui::End();
 }
 
@@ -342,7 +373,7 @@ Sphere::Sphere(int NumSegs)
 			float ySegment = (float)y / (float)Y_SEGMENTS;
 			float xPos = std::cos(xSegment * 2.0f * PI) * std::sin(ySegment * PI);
 			float yPos = std::cos(ySegment * PI);
-			float zPos = std::cos(xSegment * 2.0f * PI) * std::sin(ySegment * PI);
+			float zPos = std::sin(xSegment * 2.0f * PI) * std::sin(ySegment * PI);
 
 			positions.push_back(glm::vec3(xPos, yPos, zPos));
 			normals.push_back(glm::vec3(xPos, yPos, zPos));
@@ -386,6 +417,7 @@ Sphere::Sphere(int NumSegs)
 	glBindVertexArray(VAO);
 	glBindBuffer(GL_ARRAY_BUFFER, vbo);
 	glBufferData(GL_ARRAY_BUFFER, data.size() * sizeof(float), &data[0], GL_STATIC_DRAW);
+	glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, ebo);
 	glBufferData(GL_ELEMENT_ARRAY_BUFFER, indices.size() * sizeof(unsigned int), &indices[0], GL_STATIC_DRAW);
 	GLsizei stride = (3 + 3) * sizeof(float);
 	glEnableVertexAttribArray(0);
@@ -403,10 +435,9 @@ Cylinder::Cylinder(float bottomRadius, float topRadius, int NumSegs)
 	std::vector<glm::vec3> normals;
 	std::vector<unsigned int> indices;
 
-	//a circle
 	const float PI = (float)3.14159265359;
-	float sectorStep = 2 * PI / NumSegs;				// Angle increasing
-	float sectorAngle;									// radian
+	float sectorStep = 2 * PI / NumSegs;
+	float sectorAngle;
 
 	for (int i = 0; i <= NumSegs; ++i)
 	{
@@ -418,32 +449,29 @@ Cylinder::Cylinder(float bottomRadius, float topRadius, int NumSegs)
 		base.push_back(glm::vec3(xPos, yPos, zPos));
 	}
 
-	//put side of cylinder
+	// side
 	for (int i = 0; i < 2; ++i)
 	{
-		float h = -height / 2.0f + i * height;			// height from -h/2 to h/2   
+		float h = -height / 2.0f + i * height;
 
 		for (int j = 0; j <= NumSegs; ++j)
 		{
 			positions.push_back(glm::vec3(base[j].x * radius[i], h, base[j].z * radius[i]));
-			normals.push_back(glm::vec3(base[j].x, h, base[j].z));
+			normals.push_back(glm::vec3(base[j].x, 0, base[j].z));
 		}
 	}
 
-	//the starting index for the base/top surface
-	//NOTE: it is used for generating indices later
 	int baseCenterIndex = (int)positions.size();
-	int topCenterIndex = baseCenterIndex + NumSegs + 1; // include center vertex
+	int topCenterIndex = baseCenterIndex + NumSegs + 1;
 
-	//put base and top circles
+	// base and top caps
 	for (int i = 0; i < 2; ++i)
 	{
 		float h = -height / 2.0f + i * height;
 		float ny = (float)-1 + i * 2;
 
-		// center point
-		positions.push_back(glm::vec3(0, h, 0));		// height from -h/2 to h/2
-		normals.push_back(glm::vec3(0, ny, 0));			// z value of normal; -1 to 1
+		positions.push_back(glm::vec3(0, h, 0));
+		normals.push_back(glm::vec3(0, ny, 0));
 
 		for (int j = 0; j < NumSegs; ++j)
 		{
@@ -452,28 +480,22 @@ Cylinder::Cylinder(float bottomRadius, float topRadius, int NumSegs)
 		}
 	}
 
-	//Indexing
-	int k1 = 0;											// 1st vertex index at base
-	int k2 = NumSegs + 1;								// 1st vertex index at top
+	int k1 = 0;
+	int k2 = NumSegs + 1;
 
-	// indices for the side surface
+	// side indices
 	for (int i = 0; i < NumSegs; ++i, ++k1, ++k2)
 	{
-		// 2 triangles per sector
-		// k1 => k1+1 => k2
 		indices.push_back(k1);
 		indices.push_back(k1 + 1);
 		indices.push_back(k2);
 
-		// k2 => k1+1 => k2+1
 		indices.push_back(k2);
 		indices.push_back(k1 + 1);
 		indices.push_back(k2 + 1);
 	}
 
-	//indices for the base surface
-	//NOTE: baseCenterIndex and topCenterIndices are pre-computed during vertex generation
-	//      please see the previous code snippet
+	// base cap indices
 	for (int i = 0, k = baseCenterIndex + 1; i < NumSegs; ++i, ++k)
 	{
 		if (i < NumSegs - 1)
@@ -482,7 +504,7 @@ Cylinder::Cylinder(float bottomRadius, float topRadius, int NumSegs)
 			indices.push_back(k + 1);
 			indices.push_back(k);
 		}
-		else // last triangle
+		else
 		{
 			indices.push_back(baseCenterIndex);
 			indices.push_back(baseCenterIndex + 1);
@@ -490,7 +512,7 @@ Cylinder::Cylinder(float bottomRadius, float topRadius, int NumSegs)
 		}
 	}
 
-	// indices for the top surface
+	// top cap indices
 	for (int i = 0, k = topCenterIndex + 1; i < NumSegs; ++i, ++k)
 	{
 		if (i < NumSegs - 1)
@@ -499,7 +521,7 @@ Cylinder::Cylinder(float bottomRadius, float topRadius, int NumSegs)
 			indices.push_back(k);
 			indices.push_back(k + 1);
 		}
-		else // last triangle
+		else
 		{
 			indices.push_back(topCenterIndex);
 			indices.push_back(k);
